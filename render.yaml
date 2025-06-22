@@ -2,7 +2,7 @@ services:
   - type: web
     name: flowstate-ai
     runtime: python
-    buildCommand: pip install --no-build-isolation --no-use-pep517 -r requirements.txt
+    buildCommand: pip install -r requirements.txt
     startCommand: gunicorn flowstate_ai:app
     envVars:
       - key: OPENAI_API_KEY
