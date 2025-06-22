@@ -1,6 +1,14 @@
-buildCommand: |
-  python -m pip install --upgrade pip
-  python -m pip install setuptools==68.0.0 wheel
-  python -m pip install gunicorn==21.2.0 --ignore-installed --force-reinstall
-  python -m pip install -e .
-  python -c "import gunicorn; print(f'GUNICORN LOCATION: {gunicorn.__file__}')"
+
+services:
+  - type: web
+    name: flowstate-ai
+    env: python
+    buildCommand: |
+      python -m venv /opt/render/project/.venv
+      . /opt/render/project/.venv/bin/activate
+      pip install --upgrade pip setuptools wheel
+      pip install gunicorn==21.2.0
+      pip install -e .
+    startCommand: |
+      . /opt/render/project/.venv/bin/activate
+      gunicorn --bind :$PORT flowstate_ai:app
