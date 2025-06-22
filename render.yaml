@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: flowstate-ai
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn flowstate_ai:app
+    envVars:
+      - key: OPENAI_API_KEY
+        description: "Your OpenAI API key"
+        required: true
+      - key: SECRET_KEY
+        generateValue: true
+      - key: PYTHON_VERSION
+        value: 3.9.13
