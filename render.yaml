@@ -3,9 +3,9 @@ services:
     name: flowstate-ai
     env: python
     buildCommand: |
-      python -m pip install --upgrade pip
-      python -m pip install gunicorn==21.2.0
-      python -m pip install -e .
-      python -c "import os; print('Files in root:', os.listdir())"
+      python -m pip install --upgrade pip setuptools wheel
+      pip install gunicorn==21.2.0
+      pip install -r requirements.txt
+      python -c "import os; print('\nCurrent directory:', os.getcwd(), '\nFiles:', os.listdir())"
     startCommand: |
       python -m gunicorn --bind :$PORT flowstate_ai:app
