@@ -1,4 +1,4 @@
-# flowstate_ai.py - Complete Freestyle Analysis System
+import os
 from flask import Flask, request, jsonify, render_template, send_from_directory
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -6,7 +6,6 @@ import openai
 import re
 import uuid
 import datetime
-import os
 import sqlite3
 import json
 import tempfile
@@ -17,17 +16,19 @@ from dotenv import load_dotenv
 from pydub import AudioSegment
 from io import BytesIO
 
-# Configuration
+# Load environment variables
 load_dotenv()
+
+# Initialize Flask app
 app = Flask(__name__)
+app.secret_key = os.getenv('SECRET_KEY', os.urandom(24))
 limiter = Limiter(app=app, key_func=get_remote_address)
 
-# Security checks
-if not os.getenv('OPENAI_API_KEY'):
-    print("⚠️ Running in LOCAL-ONLY mode (no AI)")
+# Configure OpenAI
+openai.api_key = os.getenv('OPENAI_API_KEY')
+if not openai.api_key:
+    print("⚠️ Running in LOCAL-ONLY mode (no AI capabilities)")
     openai.api_key = "mock_key_for_dev"
-else:
-    openai.api_key = os.getenv('OPENAI_API_KEY')
 
 # Constants
 OPENAI_MODEL = "gpt-3.5-turbo-0125"
@@ -206,11 +207,15 @@ class FlowStateEngine:
         """Locate matching BPM beat file"""
         if not self.current_bpm: return None
         target_bpm = int(self.current_bpm.split('-')[0])
-        for f in os.listdir('static/beats'):
+        beats_dir = os.path.join(app.static_folder, 'beats')
+        if not os.path.exists(beats_dir):
+            return None
+        for f in os.listdir(beats_dir):
             if f.startswith(f"bpm_{target_bpm}"):
                 return f"/static/beats/{f}"
         return None
 
+# Initialize engine
 engine = FlowStateEngine()
 
 # API Endpoints
@@ -622,7 +627,10 @@ def template():
     </html>
     '''
 
-if __name__ == '__main__':
-    # Create required directories
+# Create required directories at startup
+if not os.path.exists('static/beats'):
     os.makedirs('static/beats', exist_ok=True)
-    app.run(host='0.0.0.0', port=5000)
+
+# For production, use this instead of app.run()
+if __name__ == '__main__':
+    app.run(debug=True)
