@@ -1,13 +1,6 @@
-services:
-  - type: web
-    name: flowstate-ai
-    env: python
-    buildCommand: |
-      python -c "import sys; print(f'\n\nPython Path: {sys.path}\n\n')"
-      pip install --upgrade pip setuptools wheel
-      pip install gunicorn==21.2.0
-      pip install -e .
-      python -c "from flowstate_ai import app; print('\n\nSUCCESS: App imported!\n\n')"
-    startCommand: |
-      echo "Starting Gunicorn with path:" && pwd && ls -la
-      gunicorn --bind :$PORT --worker-tmp-dir /dev/shm flowstate_ai:app
+buildCommand: |
+  python -m pip install --upgrade pip
+  python -m pip install setuptools==68.0.0 wheel
+  python -m pip install gunicorn==21.2.0 --ignore-installed --force-reinstall
+  python -m pip install -e .
+  python -c "import gunicorn; print(f'GUNICORN LOCATION: {gunicorn.__file__}')"
