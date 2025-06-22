@@ -3,7 +3,7 @@ services:
     name: seea-vision
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python flowstate_ai.py
+    startCommand: gunicorn flowstate_ai:app --bind 0.0.0.0:$PORT
     envVars:
       - key: PORT
         value: 10000
