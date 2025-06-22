@@ -22,12 +22,13 @@ load_dotenv()
 app = Flask(__name__)
 limiter = Limiter(app=app, key_func=get_remote_address)
 
-# Security checks
-if not os.getenv('OPENAI_API_KEY'):
-    print("⚠️ Running in LOCAL-ONLY mode (no AI)")
-    openai.api_key = "mock_key_for_dev"
+import streamlit as st  # Add this if not already imported
+
+if "OPENAI_API_KEY" in st.secrets:
+    openai.api_key = st.secrets["OPENAI_API_KEY"]
 else:
-    openai.api_key = os.getenv('OPENAI_API_KEY')
+    st.warning("⚠️ OpenAI API key not found in secrets. Running in local dev mode.")
+    openai.api_key = "mock_key_for_dev"
 
 # Constants
 OPENAI_MODEL = "gpt-3.5-turbo-0125"
