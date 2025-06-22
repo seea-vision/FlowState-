@@ -4,5 +4,7 @@ services:
     env: python
     buildCommand: |
       pip install --upgrade pip
-      pip install -r requirements.txt
-    startCommand: gunicorn --worker-tmp-dir /dev/shm flowstate_ai:app
+      pip install gunicorn==21.2.0
+      pip install -e .
+    startCommand: |
+      gunicorn --worker-tmp-dir /dev/shm flowstate_ai:app
