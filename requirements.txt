@@ -1,10 +1,10 @@
-setuptools>=61.0.0
-wheel
 flask==2.3.2
-flask-limiter==2.8.1
-openai==0.28.0
+gunicorn==21.2.0
+setuptools>=68.0.0
+wheel
 python-dotenv==1.0.0
+openai==0.28.0
 numpy==1.24.3
 pydub==0.25.1
 SpeechRecognition==3.10.0
-gunicorn==20.1.0
+flask-limiter==2.8.1
