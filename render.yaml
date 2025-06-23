@@ -2,9 +2,11 @@ services:
   - type: web
     name: flowstate
     env: python
-    buildCommand: pip install -r requirements.txt
+    rootDir: .
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
     startCommand: gunicorn flowstate_ai:app --bind 0.0.0.0:$PORT
     envVars:
       - key: PYTHONPATH
         value: .
-    rootDir: .
