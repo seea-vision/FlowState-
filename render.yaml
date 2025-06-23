@@ -1,9 +1,10 @@
 services:
   - type: web
-    name: seea-vision
+    name: flowstate
     env: python
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn flowstate_ai:app --bind 0.0.0.0:$PORT
     envVars:
-      - key: PORT
-        value: 10000
+      - key: PYTHONPATH
+        value: .
+    rootDir: .
