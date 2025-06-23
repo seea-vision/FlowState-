@@ -24,4 +24,4 @@ COPY . .
 EXPOSE $PORT
 
 # Command to run the app with gunicorn
-CMD ["gunicorn", "flowstate_ai:app", "--bind", "0.0.0.0:$PORT"]
+CMD gunicorn flowstate_ai:app --bind 0.0.0.0:${PORT:-5000}
