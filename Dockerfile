@@ -1,19 +1,27 @@
-# Use official Python image
+# Use an official Python base image
 FROM python:3.10-slim
 
-# Set working directory inside container
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# Set working directory
 WORKDIR /app
 
-# Copy project files into container
-COPY . /app
+# Install system dependencies
+RUN apt-get update && apt-get install -y gcc ffmpeg libsndfile1
 
-# Upgrade pip and install dependencies
-RUN pip install --upgrade pip \
-    && pip install setuptools==68.0.0 wheel \
-    && pip install -r requirements.txt
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --upgrade pip
+RUN pip install setuptools==68.0.0 wheel
+RUN pip install -r requirements.txt
 
-# Expose the port your app will run on
-EXPOSE 5000
+# Copy the rest of your app
+COPY . .
 
-# Start your app with Gunicorn
-CMD ["gunicorn", "flowstate_ai:app", "--bind", "0.0.0.0:5000"]
+# Expose the port Railway or other platforms use
+EXPOSE $PORT
+
+# Command to run the app with gunicorn
+CMD ["gunicorn", "flowstate_ai:app", "--bind", "0.0.0.0:$PORT"]
