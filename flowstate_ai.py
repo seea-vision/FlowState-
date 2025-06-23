@@ -15,6 +15,14 @@ from collections import defaultdict
 from dotenv import load_dotenv
 from pydub import AudioSegment
 from io import BytesIO
+import logging
+from threading import Thread
+import psycopg2
+from urllib.parse import urlparse
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -22,12 +30,16 @@ load_dotenv()
 # Initialize Flask app
 app = Flask(__name__)
 app.secret_key = os.getenv('SECRET_KEY', os.urandom(24))
-limiter = Limiter(app=app, key_func=get_remote_address)
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    default_limits=["200 per day", "50 per hour"]
+)
 
 # Configure OpenAI
 openai.api_key = os.getenv('OPENAI_API_KEY')
 if not openai.api_key:
-    print("⚠️ Running in LOCAL-ONLY mode (no AI capabilities)")
+    logger.warning("⚠️ Running in LOCAL-ONLY mode (no AI capabilities)")
     openai.api_key = "mock_key_for_dev"
 
 # Constants
@@ -51,7 +63,20 @@ class FlowStateEngine:
         self.current_bpm = None
     
     def init_db(self):
-        self.conn = sqlite3.connect('flowstate.db', check_same_thread=False)
+        if os.getenv('DATABASE_URL'):  # Production - PostgreSQL
+            url = urlparse(os.getenv('DATABASE_URL'))
+            self.conn = psycopg2.connect(
+                database=url.path[1:],
+                user=url.username,
+                password=url.password,
+                host=url.hostname,
+                port=url.port
+            )
+            logger.info("Connected to PostgreSQL database")
+        else:  # Development - SQLite
+            self.conn = sqlite3.connect('flowstate.db', check_same_thread=False)
+            logger.info("Connected to SQLite database")
+        
         self.c = self.conn.cursor()
         self.c.execute('''CREATE TABLE IF NOT EXISTS sessions
                          (id TEXT PRIMARY KEY,
@@ -68,23 +93,34 @@ class FlowStateEngine:
             'flow_type': self.flow_type,
             'bpm': self.current_bpm
         }
-        self.c.execute('''INSERT INTO sessions VALUES (?, ?, ?, ?)''',
-                      (self.session_id, json.dumps(session_data), 
-                       str(self.timestamp), artist_name))
-        self.conn.commit()
+        try:
+            self.c.execute('''INSERT INTO sessions VALUES (%s, %s, %s, %s)''',
+                          (self.session_id, json.dumps(session_data), 
+                           str(self.timestamp), artist_name))
+            self.conn.commit()
+            logger.info(f"Session saved: {self.session_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error saving session: {e}")
+            return False
     
     def load_session(self, session_id):
-        self.c.execute('''SELECT data FROM sessions WHERE id=?''', (session_id,))
-        data = self.c.fetchone()
-        if data:
-            session = json.loads(data[0])
-            self.freestyle_history = session['history']
-            self.hook_bank = defaultdict(list, session['hooks'])
-            self.key_quotes = session['quotes']
-            self.flow_type = session['flow_type']
-            self.current_bpm = session['bpm']
-            return True
-        return False
+        try:
+            self.c.execute('''SELECT data FROM sessions WHERE id=%s''', (session_id,))
+            data = self.c.fetchone()
+            if data:
+                session = json.loads(data[0])
+                self.freestyle_history = session['history']
+                self.hook_bank = defaultdict(list, session['hooks'])
+                self.key_quotes = session['quotes']
+                self.flow_type = session['flow_type']
+                self.current_bpm = session['bpm']
+                logger.info(f"Session loaded: {session_id}")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Error loading session: {e}")
+            return False
     
     def analyze_with_openai(self, text):
         """Cost-optimized AI analysis with flow typing"""
@@ -104,7 +140,7 @@ class FlowStateEngine:
             )
             return response.choices[0].message.content
         except Exception as e:
-            print(f"OpenAI Error: {e}")
+            logger.error(f"OpenAI Error: {e}")
             return None
     
     def process_line(self, line):
@@ -180,7 +216,7 @@ class FlowStateEngine:
                 "flow_type": self.flow_type
             }
         except Exception as e:
-            print(f"OpenAI Error: {e}")
+            logger.error(f"OpenAI Error: {e}")
             return self._rule_based_structure()
     
     def _rule_based_structure(self):
@@ -239,8 +275,9 @@ def reset():
 @app.route('/save', methods=['POST'])
 def save():
     artist = request.json.get('artist')
-    engine.save_session(artist)
-    return jsonify({"status": "saved", "session_id": engine.session_id})
+    if engine.save_session(artist):
+        return jsonify({"status": "saved", "session_id": engine.session_id})
+    return jsonify({"error": "Failed to save session"}), 500
 
 @app.route('/load/<session_id>', methods=['GET'])
 def load(session_id):
@@ -278,9 +315,11 @@ def transcribe():
                 "audio_preview": buffer.read().hex()  # Simple way to send binary data
             })
     except Exception as e:
+        logger.error(f"Transcription error: {e}")
         return jsonify({"error": str(e)}), 500
     finally:
-        os.remove(temp_path)
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
 @app.route('/beats/<path:filename>')
 def serve_beat(filename):
@@ -627,10 +666,14 @@ def template():
     </html>
     '''
 
-# Create required directories at startup
-if not os.path.exists('static/beats'):
-    os.makedirs('static/beats', exist_ok=True)
+def create_app():
+    # Create required directories at startup
+    if not os.path.exists('static/beats'):
+        os.makedirs('static/beats', exist_ok=True)
+    return app
 
-# For production, use this instead of app.run()
+# For production
 if __name__ == '__main__':
-    app.run(debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app = create_app()
+    app.run(host='0.0.0.0', port=port)
