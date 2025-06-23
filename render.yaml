@@ -5,6 +5,7 @@ services:
     rootDir: src
     buildCommand: |
       pip install --upgrade pip
+      pip install setuptools==68.0.0 wheel
       pip install -r ../requirements.txt
     startCommand: gunicorn flowstate_ai:app --bind 0.0.0.0:$PORT
     envVars:
