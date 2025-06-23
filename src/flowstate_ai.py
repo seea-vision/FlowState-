@@ -1,4 +1,3 @@
-
 import os
 from flask import Flask, request, jsonify, render_template, send_from_directory
 from flask_limiter import Limiter
@@ -16,6 +15,13 @@ from collections import defaultdict
 from dotenv import load_dotenv
 from pydub import AudioSegment
 from io import BytesIO
+import logging
+import psycopg2
+from urllib.parse import urlparse
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -23,12 +29,16 @@ load_dotenv()
 # Initialize Flask app
 app = Flask(__name__)
 app.secret_key = os.getenv('SECRET_KEY', os.urandom(24))
-limiter = Limiter(app=app, key_func=get_remote_address)
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    default_limits=["200 per day", "50 per hour"]
+)
 
 # Configure OpenAI
 openai.api_key = os.getenv('OPENAI_API_KEY')
 if not openai.api_key:
-    print("⚠️ Running in LOCAL-ONLY mode (no AI capabilities)")
+    logger.warning("⚠️ Running in LOCAL-ONLY mode (no AI capabilities)")
     openai.api_key = "mock_key_for_dev"
 
 # Constants
@@ -52,7 +62,20 @@ class FlowStateEngine:
         self.current_bpm = None
     
     def init_db(self):
-        self.conn = sqlite3.connect('flowstate.db', check_same_thread=False)
+        if os.getenv('DATABASE_URL'):  # Production - PostgreSQL
+            url = urlparse(os.getenv('DATABASE_URL'))
+            self.conn = psycopg2.connect(
+                database=url.path[1:],
+                user=url.username,
+                password=url.password,
+                host=url.hostname,
+                port=url.port
+            )
+            logger.info("Connected to PostgreSQL database")
+        else:  # Development - SQLite
+            self.conn = sqlite3.connect('flowstate.db', check_same_thread=False)
+            logger.info("Connected to SQLite database")
+        
         self.c = self.conn.cursor()
         self.c.execute('''CREATE TABLE IF NOT EXISTS sessions
                          (id TEXT PRIMARY KEY,
@@ -69,23 +92,34 @@ class FlowStateEngine:
             'flow_type': self.flow_type,
             'bpm': self.current_bpm
         }
-        self.c.execute('''INSERT INTO sessions VALUES (?, ?, ?, ?)''',
-                      (self.session_id, json.dumps(session_data), 
-                       str(self.timestamp), artist_name))
-        self.conn.commit()
+        try:
+            self.c.execute('''INSERT INTO sessions VALUES (%s, %s, %s, %s)''',
+                          (self.session_id, json.dumps(session_data), 
+                           str(self.timestamp), artist_name))
+            self.conn.commit()
+            logger.info(f"Session saved: {self.session_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error saving session: {e}")
+            return False
     
     def load_session(self, session_id):
-        self.c.execute('''SELECT data FROM sessions WHERE id=?''', (session_id,))
-        data = self.c.fetchone()
-        if data:
-            session = json.loads(data[0])
-            self.freestyle_history = session['history']
-            self.hook_bank = defaultdict(list, session['hooks'])
-            self.key_quotes = session['quotes']
-            self.flow_type = session['flow_type']
-            self.current_bpm = session['bpm']
-            return True
-        return False
+        try:
+            self.c.execute('''SELECT data FROM sessions WHERE id=%s''', (session_id,))
+            data = self.c.fetchone()
+            if data:
+                session = json.loads(data[0])
+                self.freestyle_history = session['history']
+                self.hook_bank = defaultdict(list, session['hooks'])
+                self.key_quotes = session['quotes']
+                self.flow_type = session['flow_type']
+                self.current_bpm = session['bpm']
+                logger.info(f"Session loaded: {session_id}")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Error loading session: {e}")
+            return False
     
     def analyze_with_openai(self, text):
         """Cost-optimized AI analysis with flow typing"""
@@ -105,7 +139,7 @@ class FlowStateEngine:
             )
             return response.choices[0].message.content
         except Exception as e:
-            print(f"OpenAI Error: {e}")
+            logger.error(f"OpenAI Error: {e}")
             return None
     
     def process_line(self, line):
@@ -181,7 +215,7 @@ class FlowStateEngine:
                 "flow_type": self.flow_type
             }
         except Exception as e:
-            print(f"OpenAI Error: {e}")
+            logger.error(f"OpenAI Error: {e}")
             return self._rule_based_structure()
     
     def _rule_based_structure(self):
@@ -240,8 +274,9 @@ def reset():
 @app.route('/save', methods=['POST'])
 def save():
     artist = request.json.get('artist')
-    engine.save_session(artist)
-    return jsonify({"status": "saved", "session_id": engine.session_id})
+    if engine.save_session(artist):
+        return jsonify({"status": "saved", "session_id": engine.session_id})
+    return jsonify({"error": "Failed to save session"}), 500
 
 @app.route('/load/<session_id>', methods=['GET'])
 def load(session_id):
@@ -276,362 +311,27 @@ def transcribe():
             
             return jsonify({
                 "text": text,
-                "audio_preview": buffer.read().hex()  # Simple way to send binary data
+                "audio_preview": buffer.read().hex()
             })
     except Exception as e:
+        logger.error(f"Transcription error: {e}")
         return jsonify({"error": str(e)}), 500
     finally:
-        os.remove(temp_path)
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
 @app.route('/beats/<path:filename>')
 def serve_beat(filename):
     return send_from_directory('static/beats', filename)
 
-# HTML Template
-@app.route('/template')
-def template():
-    return '''
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>FlowState AI</title>
-        <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap" rel="stylesheet">
-        <style>
-            :root {
-                --primary: #6a11cb;
-                --secondary: #2575fc;
-                --dark: #121212;
-                --card: #1e1e1e;
-                --text: #e0e0e0;
-            }
-            body {
-                font-family: 'Poppins', sans-serif;
-                background: var(--dark);
-                color: var(--text);
-                padding: 20px;
-                line-height: 1.6;
-            }
-            .container {
-                max-width: 100%;
-                margin: 0 auto;
-            }
-            h1 {
-                background: linear-gradient(to right, var(--primary), var(--secondary));
-                -webkit-background-clip: text;
-                background-clip: text;
-                color: transparent;
-                text-align: center;
-                margin-bottom: 10px;
-            }
-            .card {
-                background: var(--card);
-                border-radius: 10px;
-                padding: 15px;
-                margin-bottom: 20px;
-                box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            }
-            textarea {
-                width: 100%;
-                background: rgba(255,255,255,0.1);
-                border: 1px solid rgba(255,255,255,0.2);
-                border-radius: 8px;
-                padding: 12px;
-                color: white;
-                margin-bottom: 10px;
-                min-height: 100px;
-            }
-            .btn {
-                background: linear-gradient(to right, var(--primary), var(--secondary));
-                color: white;
-                border: none;
-                padding: 10px 15px;
-                border-radius: 8px;
-                margin-right: 8px;
-                margin-bottom: 8px;
-                font-weight: 600;
-                cursor: pointer;
-            }
-            .tag {
-                display: inline-block;
-                padding: 3px 8px;
-                border-radius: 12px;
-                font-size: 12px;
-                margin-right: 5px;
-                margin-bottom: 5px;
-                font-weight: 600;
-            }
-            .tag-hook { background: #28a745; }
-            .tag-quote { background: #17a2b8; }
-            .tag-repeat { background: #dc3545; }
-            .tag-ai { background: #6f42c1; }
-            .tag-flow { background: #fd7e14; }
-            .line {
-                margin-bottom: 15px;
-                padding: 10px;
-                border-radius: 8px;
-                background: rgba(255,255,255,0.05);
-            }
-            .recording {
-                animation: pulse 1.5s infinite;
-                color: red;
-            }
-            @keyframes pulse {
-                0% { opacity: 1; }
-                50% { opacity: 0.5; }
-                100% { opacity: 1; }
-            }
-            #audio-preview {
-                width: 100%;
-                margin-top: 10px;
-            }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>FlowState AI</h1>
-            <p style="text-align: center; color: #aaa;">Freestyle → Song Converter</p>
-            
-            <div class="card">
-                <h3>🎤 Input</h3>
-                <textarea id="freestyle-input" placeholder="Type or record your freestyle..."></textarea>
-                <div>
-                    <button id="record-btn" class="btn">🎤 Record (10s)</button>
-                    <button id="stop-btn" class="btn" style="display:none;">⏹ Stop</button>
-                    <button id="analyze-btn" class="btn">🔍 Analyze</button>
-                    <button id="generate-btn" class="btn">🎵 Generate Song</button>
-                    <button id="reset-btn" class="btn">🔄 New Session</button>
-                </div>
-                <div id="recording-status" style="display: none;">
-                    <span class="recording">●</span> Recording...
-                </div>
-                <audio id="audio-preview" controls style="display:none;"></audio>
-            </div>
-            
-            <div class="card">
-                <h3>📊 Analysis</h3>
-                <div id="lines-container"></div>
-            </div>
-            
-            <div class="card">
-                <h3>🎶 Song Structure</h3>
-                <div id="structure-container"></div>
-                <div id="beat-suggestion" style="margin-top: 10px;"></div>
-            </div>
-            
-            <div class="card">
-                <h3>💾 Session</h3>
-                <input type="text" id="artist-name" placeholder="Artist name (optional)">
-                <button id="save-btn" class="btn">💾 Save Session</button>
-                <button id="load-btn" class="btn">📂 Load Session</button>
-                <div id="session-status"></div>
-            </div>
-        </div>
+def create_app():
+    # Create required directories at startup
+    if not os.path.exists('static/beats'):
+        os.makedirs('static/beats', exist_ok=True)
+    return app
 
-        <script>
-            // Session Management
-            let currentSessionId = null;
-            
-            // Audio Recording
-            let mediaRecorder;
-            let audioChunks = [];
-            const recordBtn = document.getElementById('record-btn');
-            const stopBtn = document.getElementById('stop-btn');
-            const audioPreview = document.getElementById('audio-preview');
-            
-            recordBtn.addEventListener('click', startRecording);
-            stopBtn.addEventListener('click', stopRecording);
-            
-            async function startRecording() {
-                try {
-                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                    mediaRecorder = new MediaRecorder(stream);
-                    mediaRecorder.start();
-                    audioChunks = [];
-                    
-                    mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
-                    document.getElementById('recording-status').style.display = 'block';
-                    recordBtn.style.display = 'none';
-                    stopBtn.style.display = 'inline-block';
-                    
-                    // Auto-stop after 10 seconds
-                    setTimeout(() => {
-                        if (mediaRecorder.state === 'recording') {
-                            stopRecording();
-                        }
-                    }, 10000);
-                    
-                } catch (err) {
-                    alert("Microphone access denied. Please enable permissions.");
-                }
-            }
-            
-            function stopRecording() {
-                mediaRecorder.stop();
-                mediaRecorder.stream.getTracks().forEach(track => track.stop());
-                document.getElementById('recording-status').style.display = 'none';
-                recordBtn.style.display = 'inline-block';
-                stopBtn.style.display = 'none';
-            }
-            
-            mediaRecorder.onstop = async () => {
-                const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
-                const formData = new FormData();
-                formData.append('audio', audioBlob);
-                
-                try {
-                    const response = await fetch('/transcribe', {
-                        method: 'POST',
-                        body: formData
-                    });
-                    const data = await response.json();
-                    
-                    if (data.text) {
-                        document.getElementById('freestyle-input').value = data.text;
-                    }
-                    
-                    if (data.audio_preview) {
-                        const audioBuffer = new Uint8Array(data.audio_preview.match(/.{1,2}/g).map(byte => parseInt(byte, 16))).buffer;
-                        audioPreview.src = URL.createObjectURL(new Blob([audioBuffer], { type: 'audio/mp3' }));
-                        audioPreview.style.display = 'block';
-                    }
-                    
-                } catch (e) {
-                    console.error("Error:", e);
-                }
-            };
-            
-            // Analysis and Generation
-            document.getElementById('analyze-btn').addEventListener('click', analyzeLine);
-            document.getElementById('generate-btn').addEventListener('click', generateStructure);
-            document.getElementById('reset-btn').addEventListener('click', resetSession);
-            document.getElementById('save-btn').addEventListener('click', saveSession);
-            document.getElementById('load-btn').addEventListener('click', loadSession);
-            
-            async function analyzeLine() {
-                const line = document.getElementById('freestyle-input').value.trim();
-                if (!line) return;
-                
-                const response = await fetch('/analyze', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ line })
-                });
-                
-                const data = await response.json();
-                displayAnalysis(data);
-                document.getElementById('freestyle-input').value = '';
-            }
-            
-            function displayAnalysis(data) {
-                const lineDiv = document.createElement('div');
-                lineDiv.className = 'line';
-                
-                let tags = '';
-                if (data.deja_vu) tags += '<span class="tag tag-repeat">Repeat</span>';
-                if (data.hook) tags += '<span class="tag tag-hook">Hook</span>';
-                if (data.key_quote) tags += '<span class="tag tag-quote">Key Line</span>';
-                if (data.power_words.length > 0) {
-                    tags += `<span class="tag tag-ai">Power: ${data.power_words.join(', ')}</span>`;
-                }
-                tags += `<span class="tag tag-flow">Flow: ${data.flow_score}/10</span>`;
-                
-                lineDiv.innerHTML = `${tags}<div>${data.line}</div>`;
-                
-                if (data.analysis) {
-                    const analysisDiv = document.createElement('div');
-                    analysisDiv.style = "font-size:0.8em;color:#bbb;margin-top:5px";
-                    analysisDiv.textContent = data.analysis;
-                    lineDiv.appendChild(analysisDiv);
-                }
-                
-                document.getElementById('lines-container').appendChild(lineDiv);
-            }
-            
-            async function generateStructure() {
-                const response = await fetch('/generate');
-                const data = await response.json();
-                
-                const container = document.getElementById('structure-container');
-                container.innerHTML = `
-                    <div style="white-space: pre-line; background: rgba(0,0,0,0.2); padding: 10px; border-radius: 8px;">
-                        ${data.structure}
-                    </div>
-                    <p><strong>BPM:</strong> ${data.bpm} | <strong>Flow Type:</strong> ${data.flow_type || 'Not detected'}</p>
-                `;
-                
-                // Check for matching beat
-                const beatSuggestion = document.getElementById('beat-suggestion');
-                beatSuggestion.innerHTML = '<p>Loading beat suggestion...</p>';
-                
-                const beatResponse = await fetch(`/beats/bpm_${data.bpm.split('-')[0]}.mp3`);
-                if (beatResponse.ok) {
-                    beatSuggestion.innerHTML = `
-                        <p>🎧 Suggested beat: <a href="${beatResponse.url}" target="_blank">Play</a></p>
-                        <audio controls src="${beatResponse.url}" style="width:100%"></audio>
-                    `;
-                } else {
-                    beatSuggestion.innerHTML = '<p>No matching beat found for this BPM</p>';
-                }
-            }
-            
-            async function resetSession() {
-                const response = await fetch('/reset', { method: 'POST' });
-                const data = await response.json();
-                currentSessionId = data.session_id;
-                document.getElementById('lines-container').innerHTML = '';
-                document.getElementById('structure-container').innerHTML = '';
-                document.getElementById('freestyle-input').value = '';
-                document.getElementById('session-status').innerHTML = '<p>New session started</p>';
-            }
-            
-            async function saveSession() {
-                const artist = document.getElementById('artist-name').value.trim() || null;
-                const response = await fetch('/save', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ artist })
-                });
-                const data = await response.json();
-                currentSessionId = data.session_id;
-                document.getElementById('session-status').innerHTML = `
-                    <p>Session saved! ID: ${data.session_id}</p>
-                `;
-            }
-            
-            async function loadSession() {
-                const sessionId = prompt("Enter session ID to load:");
-                if (!sessionId) return;
-                
-                const response = await fetch(`/load/${sessionId}`);
-                if (response.ok) {
-                    document.getElementById('lines-container').innerHTML = '';
-                    document.getElementById('structure-container').innerHTML = '';
-                    document.getElementById('session-status').innerHTML = '<p>Session loaded!</p>';
-                    currentSessionId = sessionId;
-                    
-                    // Trigger analysis display for all lines
-                    const lines = await fetch('/generate');
-                    const structure = await lines.json();
-                    document.getElementById('structure-container').innerHTML = `
-                        <div style="white-space: pre-line; background: rgba(0,0,0,0.2); padding: 10px; border-radius: 8px;">
-                            ${structure.structure}
-                        </div>
-                    `;
-                } else {
-                    alert("Session not found");
-                }
-            }
-        </script>
-    </body>
-    </html>
-    '''
-
-# Create required directories at startup
-if not os.path.exists('static/beats'):
-    os.makedirs('static/beats', exist_ok=True)
-
-# For production, use this instead of app.run()
+# Production configuration
 if __name__ == '__main__':
-    app.run(debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app = create_app()
+    app.run(host='0.0.0.0', port=port)
